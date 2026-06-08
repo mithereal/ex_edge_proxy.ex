@@ -1,0 +1,32 @@
+[
+  {
+    "tenant": "acme",
+    "host": "acme.com",
+    "path": "/",
+    "upstream": {
+      "type": "http",
+      "host": "tenant_acme",
+      "port": 4200
+    }
+  },
+  {
+    "tenant": "any",
+    "host": "*.app.com",
+    "path": "/api",
+    "upstream": {
+      "type": "http",
+      "host": "tenant_api",
+      "port": 4101
+    }
+  },
+  {
+    "tenant": "any",
+    "host": "app.com",
+    "path": "/admin",
+    "upstream": {
+      "type": "http",
+      "host": "admin_app",
+      "port": 4002
+    }
+  }
+]
