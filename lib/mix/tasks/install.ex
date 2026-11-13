@@ -1,136 +1,144 @@
 defmodule Mix.Tasks.EdgeProxy.Install do
-  use Mix.Task
+  @shortdoc "Installs EdgeProxy across umbrella or Phoenix apps using Igniter"
 
-  @shortdoc "Installs EdgeProxy correctly across umbrella (strict boundary mode)"
+  @moduledoc """
+  Installs EdgeProxy into the edge gateway app and wires `EdgeContract`
+  into downstream Phoenix apps.
+
+  ## Usage
+
+      mix edge_proxy.install
+      mix edge_proxy.install edge
+      mix edge_proxy.install apps
+      mix edge_proxy.install uninstall
+  """
+
+  use Igniter.Mix.Task
 
   alias EdgeProxy.Igniter.Extension
   alias EdgeProxy.State
 
-  @impl true
-  def run(args) do
-    case args do
-      ["edge"] -> install_edge_app()
-      ["apps"] -> install_phoenix_apps()
-      ["uninstall"] -> uninstall_all()
-      _ -> install_all()
-    end
+  @impl Igniter.Mix.Task
+  def info(_argv, _composing_task) do
+    %Igniter.Mix.Task.Info{
+      group: :edge_proxy,
+      positional: [mode: [optional: true]]
+    }
   end
 
-  # ------------------------------------------------------------
-  # FULL INSTALL
-  # ------------------------------------------------------------
+  @impl Igniter.Mix.Task
+  def igniter(igniter) do
+    case igniter.args.positional[:mode] do
+      "edge" ->
+        install_edge_app(igniter)
 
-  defp install_all do
-    install_edge_app()
-    install_phoenix_apps()
+      "apps" ->
+        install_phoenix_apps(igniter)
+
+      "uninstall" ->
+        uninstall_all(igniter)
+
+      _ ->
+        igniter
+        |> install_edge_app()
+        |> install_phoenix_apps()
+    end
   end
 
   # ------------------------------------------------------------
   # EDGE APP ONLY (STRICT)
   # ------------------------------------------------------------
 
-  defp install_edge_app do
-    Mix.shell().info("🔐 Installing EdgeProxy (edge app only)")
+  defp install_edge_app(igniter) do
+    case find_edge_endpoint() do
+      nil ->
+        Igniter.add_warning(
+          igniter,
+          "Could not find edge_proxy endpoint at apps/edge_proxy/lib/**/*endpoint.ex"
+        )
 
-    endpoint = find_edge_endpoint()
-
-    endpoint
-    |> Igniter.read_file()
-    |> Extension.inject_edge_proxy_endpoint()
-    |> Igniter.write_file(endpoint)
-
-    State.mark("edge_proxy", "endpoint", true)
-
-    Mix.shell().info("✅ EdgeProxy installed in edge app")
+      endpoint_path ->
+        State.mark("edge_proxy", "endpoint", true)
+        Extension.inject_edge_proxy_endpoint(igniter, endpoint_path)
+    end
   end
 
   # ------------------------------------------------------------
   # PHOENIX APPS (CONTEXT ONLY)
   # ------------------------------------------------------------
 
-  defp install_phoenix_apps do
-    Mix.shell().info("📦 Installing EdgeContract into Phoenix apps")
-
-    phoenix_apps()
-    |> Enum.each(fn app ->
-      install_app(app)
+  defp install_phoenix_apps(igniter) do
+    Enum.reduce(phoenix_apps(), igniter, fn app_path, acc ->
+      install_app(acc, app_path)
     end)
   end
 
-  defp install_app(app) do
-    install_endpoint(app)
-    install_router(app)
-    install_socket(app)
+  defp install_app(igniter, app_path) do
+    State.mark(app_path, "installed", true)
 
-    State.mark(app, "installed", true)
+    igniter
+    |> install_endpoint(app_path)
+    |> install_router(app_path)
+    |> install_socket(app_path)
   end
 
-  defp install_endpoint(app) do
-    file = find_file(app, "endpoint.ex")
-
-    file
-    |> Igniter.read_file()
-    |> Extension.inject_edge_context_plug()
-    |> Igniter.write_file(file)
-  end
-
-  defp install_router(app) do
-    file = find_file(app, "router.ex")
-
-    file
-    |> Igniter.read_file()
-    |> Extension.inject_liveview_hook()
-    |> Igniter.write_file(file)
-  end
-
-  defp install_socket(app) do
-    case find_optional_file(app, "user_socket.ex") do
+  defp install_endpoint(igniter, app_path) do
+    case find_file(app_path, "endpoint.ex") do
       nil ->
-        :ok
+        Igniter.add_warning(igniter, "No endpoint.ex found in #{app_path}")
 
       file ->
-        file
-        |> Igniter.read_file()
-        |> Extension.inject_socket_context()
-        |> Igniter.write_file(file)
+        Extension.inject_edge_context_plug(igniter, file)
+    end
+  end
+
+  defp install_router(igniter, app_path) do
+    case find_file(app_path, "router.ex") do
+      nil ->
+        Igniter.add_warning(igniter, "No router.ex found in #{app_path}")
+
+      file ->
+        Extension.inject_liveview_hook(igniter, file)
+    end
+  end
+
+  defp install_socket(igniter, app_path) do
+    case find_file(app_path, "user_socket.ex") do
+      nil ->
+        igniter
+
+      file ->
+        Extension.inject_socket_context(igniter, file)
     end
   end
 
   # ------------------------------------------------------------
-  # EDGE UNINSTALL
+  # UNINSTALL
   # ------------------------------------------------------------
 
-  defp uninstall_all do
-    Mix.shell().info("🧹 Uninstalling EdgeProxy from umbrella")
+  defp uninstall_all(igniter) do
+    igniter =
+      Enum.reduce(phoenix_apps(), igniter, fn app_path, acc ->
+        uninstall_app(acc, app_path)
+      end)
 
-    phoenix_apps()
-    |> Enum.each(&uninstall_app/1)
-
-    uninstall_edge_app()
-
+    igniter = uninstall_edge_app(igniter)
     State.reset()
+    igniter
   end
 
-  defp uninstall_app(app) do
-    file = find_file(app, "endpoint.ex")
-
-    file
-    |> Igniter.read_file()
-    |> Extension.remove_edge_context_plug()
-    |> Igniter.write_file(file)
-
-    Mix.shell().info("↩ removed EdgeContract from #{app}")
+  defp uninstall_app(igniter, app_path) do
+    case find_file(app_path, "endpoint.ex") do
+      nil -> igniter
+      file -> Extension.remove_edge_context_plug(igniter, file)
+    end
   end
 
-  defp uninstall_edge_app do
-    file = find_edge_endpoint()
-
-    file
-    |> Igniter.read_file()
-    |> Extension.remove_edge_proxy_endpoint()
-    |> Igniter.write_file(file)
-
-    Mix.shell().info("↩ removed EdgeProxy endpoint wiring")
+  defp uninstall_edge_app(igniter) do
+    case find_edge_endpoint() do
+      nil -> igniter
+      file -> Extension.remove_edge_proxy_endpoint(igniter, file)
+    end
   end
 
   # ------------------------------------------------------------
@@ -145,7 +153,10 @@ defmodule Mix.Tasks.EdgeProxy.Install do
   end
 
   defp phoenix_app?(mixfile) do
-    mixfile |> File.read!() |> String.contains?(":phoenix")
+    case File.read(mixfile) do
+      {:ok, content} -> Regex.match?(~r/\{:phoenix\b/, content)
+      _ -> false
+    end
   end
 
   defp find_edge_endpoint do
@@ -153,14 +164,8 @@ defmodule Mix.Tasks.EdgeProxy.Install do
     |> List.first()
   end
 
-  defp find_file(app, file) do
-    Path.join(app, "lib/**/*#{file}")
-    |> Path.wildcard()
-    |> List.first()
-  end
-
-  defp find_optional_file(app, file) do
-    Path.join(app, "lib/**/*#{file}")
+  defp find_file(app_path, suffix) do
+    Path.join(app_path, "lib/**/*#{suffix}")
     |> Path.wildcard()
     |> List.first()
   end

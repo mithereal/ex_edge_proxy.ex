@@ -1,20 +1,19 @@
 defmodule EdgeProxy.Application do
   use Application
 
+  @impl true
   def start(_type, _args) do
     children = [
       EdgeProxy.Routing.Runtime,
-      EdgeProxy.Domain.Registry,
       EdgeProxy.LiveView.SessionSupervisor,
       EdgeProxy.Control.Socket
     ]
 
-     Supervisor.start_link(children, strategy: :one_for_one, name: EdgeProxy.Supervisor)
-     |> startup()
-  end
+    opts = [strategy: :one_for_one, name: EdgeProxy.Supervisor]
 
-  def startup(params) do
-    EdgeProxy.Config.Loader.load()
-    params
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      EdgeProxy.Config.Loader.load()
+      {:ok, pid}
+    end
   end
 end

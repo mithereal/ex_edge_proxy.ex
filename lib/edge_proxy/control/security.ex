@@ -1,18 +1,12 @@
 defmodule EdgeProxy.Control.Security do
   @moduledoc """
-  HMAC + replay + timestamp + tenant-scoped authorization layer.
+  HMAC-SHA256 + timestamp + tenant-scoped authorization layer.
   """
 
-  @secret Application.compile_env(:edge_proxy, :control_secret, "dev_secret")
+  # 30 seconds (in seconds, matching System.system_time(:second))
+  @max_skew 30
 
-  # 30 seconds
-  @max_skew 30_000
-
-  # ----------------------------
-  # Entry point
-  # ----------------------------
-
-  def verify(msg) do
+  def verify(msg) when is_map(msg) do
     with :ok <- check_timestamp(msg),
          :ok <- check_signature(msg),
          :ok <- authorize(msg) do
@@ -20,11 +14,13 @@ defmodule EdgeProxy.Control.Security do
     end
   end
 
-  # ----------------------------
-  # Timestamp protection
-  # ----------------------------
+  def verify(_), do: {:error, :invalid_payload}
 
-  defp check_timestamp(%{"ts" => ts}) do
+  # ------------------------------------------------------------
+  # TIMESTAMP PROTECTION
+  # ------------------------------------------------------------
+
+  defp check_timestamp(%{"ts" => ts}) when is_integer(ts) do
     now = System.system_time(:second)
 
     if abs(now - ts) <= @max_skew do
@@ -34,38 +30,43 @@ defmodule EdgeProxy.Control.Security do
     end
   end
 
-  defp check_timestamp(_), do: {:error, :missing_timestamp}
+  defp check_timestamp(_), do: {:error, :missing_or_invalid_timestamp}
 
-  # ----------------------------
-  # HMAC signature verification
-  # ----------------------------
+  # ------------------------------------------------------------
+  # HMAC SIGNATURE VERIFICATION
+  # ------------------------------------------------------------
 
-  defp check_signature(msg) do
-    provided = Map.get(msg, "sig", "")
+  defp check_signature(%{"sig" => provided} = msg) when is_binary(provided) do
+    expected =
+      msg
+      |> Map.drop(["sig"])
+      |> sign()
 
-    expected = sign(Map.drop(msg, ["sig"]))
-
-    if secure_equals?(provided, expected) do
+    if secure_equals?(String.downcase(provided), expected) do
       :ok
     else
       {:error, :invalid_signature}
     end
   end
 
-  defp sign(data) do
-    data
-    |> canonicalize()
-    |> :crypto.mac(:hmac, :sha256, @secret, &1)
+  defp check_signature(_), do: {:error, :missing_signature}
+
+  def sign(data) do
+    secret = Application.get_env(:edge_proxy, :control_secret, "dev_secret")
+    payload = canonicalize(data)
+
+    :crypto.mac(:hmac, :sha256, secret, payload)
     |> Base.encode16(case: :lower)
   end
 
-  # stable ordering for signature consistency
   defp canonicalize(map) do
     map
-    |> Enum.sort_by(fn {k, _v} -> k end)
-    |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
-    |> Enum.join("&")
+    |> Enum.sort_by(fn {k, _v} -> to_string(k) end)
+    |> Enum.map_join("&", fn {k, v} -> "#{k}=#{canonical_value(v)}" end)
   end
+
+  defp canonical_value(v) when is_binary(v) or is_number(v) or is_atom(v), do: to_string(v)
+  defp canonical_value(v), do: Jason.encode!(v)
 
   defp secure_equals?(a, b) when byte_size(a) == byte_size(b) do
     :crypto.hash_equals(a, b)
@@ -73,23 +74,19 @@ defmodule EdgeProxy.Control.Security do
 
   defp secure_equals?(_, _), do: false
 
-  # ----------------------------
-  # Authorization layer (tenant scoped)
-  # ----------------------------
+  # ------------------------------------------------------------
+  # AUTHORIZATION LAYER
+  # ------------------------------------------------------------
 
-  defp authorize(%{"tenant" => tenant}) do
-    allowed = allowed_tenants()
+  defp authorize(%{"tenant" => tenant}) when is_binary(tenant) do
+    case Application.get_env(:edge_proxy, :allowed_control_tenants, :all) do
+      :all ->
+        :ok
 
-    if tenant in allowed do
-      :ok
-    else
-      {:error, :unauthorized_tenant}
+      allowed when is_list(allowed) ->
+        if tenant in allowed, do: :ok, else: {:error, :unauthorized_tenant}
     end
   end
 
   defp authorize(_), do: {:error, :missing_tenant}
-
-  defp allowed_tenants do
-    Application.get_env(:edge_proxy, :allowed_control_tenants, [])
-  end
 end

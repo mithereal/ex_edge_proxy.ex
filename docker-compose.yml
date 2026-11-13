@@ -1,0 +1,52 @@
+services:
+  edge_proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      GATEWAY_PORT: "4000"
+      EDGE_CONTROL_SECRET: "${EDGE_CONTROL_SECRET:-dev_docker_secret}"
+    volumes:
+      - ./edge_proxy/routes.json:/app/edge_proxy/routes.json:ro
+    depends_on:
+      - auth_app
+      - billing_app
+    networks:
+      - mesh_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  auth_app:
+    build:
+      context: ../auth_app
+      dockerfile: Dockerfile
+    environment:
+      PHX_HOST: "auth.mesh.local"
+      PORT: "4001"
+      SECRET_KEY_BASE: "${AUTH_SECRET_KEY_BASE:-replace_with_64_char_secret}"
+    expose:
+      - "4001"
+    networks:
+      - mesh_net
+
+  billing_app:
+    build:
+      context: ../billing_app
+      dockerfile: Dockerfile
+    environment:
+      PHX_HOST: "billing.mesh.local"
+      PORT: "4002"
+      SECRET_KEY_BASE: "${BILLING_SECRET_KEY_BASE:-replace_with_64_char_secret}"
+    expose:
+      - "4002"
+    networks:
+      - mesh_net
+
+networks:
+  mesh_net:
+    driver: bridge

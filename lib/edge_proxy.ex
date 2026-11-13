@@ -1,79 +1,64 @@
 defmodule EdgeProxy do
   @moduledoc """
-  EdgeProxy core entrypoint.
-
-  Responsibilities:
-  - resolve tenant/domain from request
-  - route HTTP traffic to upstream Phoenix apps
-  - handle WebSocket / LiveView upgrades
-  - enforce circuit breaker checks
-  - inject EdgeContract headers
-
-  This module does NOT contain business logic.
-  It only routes and shapes traffic.
+  EdgeProxy core entrypoint and Plug.
   """
 
+  @behaviour Plug
   require Logger
 
   alias EdgeProxy.Routing.Runtime
-  alias EdgeProxy.Proxy.HTTP
-  alias EdgeProxy.Proxy.WebSocket
+  alias EdgeProxy.HTTP.Forwarder
+  alias EdgeProxy.LiveView.Session
 
-  # ------------------------------------------------------------
-  # HTTP ENTRYPOINT
-  # ------------------------------------------------------------
+  @impl true
+  def init(opts), do: opts
 
+  @impl true
   def call(conn, opts) do
     case Runtime.resolve(conn) do
       {:ok, route} ->
-        HTTP.forward(conn, route, opts)
+        conn = inject_contract_headers(conn, route)
+
+        if websocket_upgrade?(conn) do
+          Session.upgrade(conn, route, opts)
+        else
+          Forwarder.forward(conn, route)
+        end
+
+      {:error, :circuit_open} ->
+        Plug.Conn.send_resp(conn, 503, "Service Unavailable (Circuit Open)")
+
+      {:error, :no_route} ->
+        Plug.Conn.send_resp(conn, 404, "No Route Found")
 
       {:error, reason} ->
         Logger.warning("EdgeProxy routing failed: #{inspect(reason)}")
-        send_error(conn, reason)
+        Plug.Conn.send_resp(conn, 502, "EdgeProxy routing error: #{inspect(reason)}")
     end
   end
 
-  # ------------------------------------------------------------
-  # WEBSOCKET / LIVEVIEW UPGRADE ENTRYPOINT
-  # ------------------------------------------------------------
+  def update_routes(new_routes), do: Runtime.update(new_routes)
+  def set_circuit_breaker(tenant, state), do: Runtime.set_circuit_breaker(tenant, state)
 
-  def upgrade(conn, opts) do
-    case Runtime.resolve(conn) do
-      {:ok, route} ->
-        WebSocket.upgrade(conn, route, opts)
-
-      {:error, reason} ->
-        Logger.warning("EdgeProxy WS upgrade failed: #{inspect(reason)}")
-        send_error(conn, reason)
-    end
+  defp websocket_upgrade?(conn) do
+    conn
+    |> Plug.Conn.get_req_header("upgrade")
+    |> Enum.any?(&(String.downcase(&1) == "websocket"))
   end
 
-  # ------------------------------------------------------------
-  # INTERNAL: ERROR RESPONSE
-  # ------------------------------------------------------------
+  defp inject_contract_headers(conn, route) do
+    request_id =
+      case Plug.Conn.get_req_header(conn, "x-request-id") do
+        [id | _] -> id
+        [] -> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      end
 
-  defp send_error(conn, reason) do
-    Plug.Conn.send_resp(conn, 502, "EdgeProxy routing error: #{inspect(reason)}")
+    conn
+    |> put_if_present("x-edge-tenant", route.tenant)
+    |> Plug.Conn.put_req_header("x-edge-domain", route.host)
+    |> Plug.Conn.put_req_header("x-request-id", request_id)
   end
 
-  # ------------------------------------------------------------
-  # CONTROL PLANE HOOK (OPTIONAL)
-  # ------------------------------------------------------------
-
-  @doc """
-  Runtime update hook used by control plane.
-
-  Allows live updates of routing tables without restart.
-  """
-  def update_routes(new_routes) do
-    Runtime.update(new_routes)
-  end
-
-  @doc """
-  Circuit breaker toggle per tenant.
-  """
-  def set_circuit_breaker(tenant, state) do
-    Runtime.set_circuit_breaker(tenant, state)
-  end
+  defp put_if_present(conn, _key, nil), do: conn
+  defp put_if_present(conn, key, val), do: Plug.Conn.put_req_header(conn, key, to_string(val))
 end
