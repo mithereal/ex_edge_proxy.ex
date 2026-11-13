@@ -7,6 +7,7 @@ defmodule EdgeProxy.Application do
 
   @compile {:no_warn_undefined, [Bandit, Router.Router]}
 
+  @env Mix.env()
   @default_backplane_port 4040
   @default_backplane_ip {127, 0, 0, 1}
 
@@ -60,8 +61,7 @@ defmodule EdgeProxy.Application do
         end
 
       :auto ->
-        # Avoid binding port 4040 automatically during :test unless explicitly enabled
-        if Mix.env() != :test and backplane_available?() do
+        if @env != :test and backplane_available?() do
           [backplane_child_spec()]
         else
           []
