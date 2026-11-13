@@ -11,11 +11,11 @@ Add `:edge_proxy`, `:bandit`, and `:igniter` to your umbrella's root `mix.exs` (
 ```elixir
 defp deps do
   [
-    {:edge_proxy, github: "mithereal/ex_edge_proxy.ex"},
+    {:edge_proxy, ">= 0.0.0"},
     {:bandit, "~> 1.5"},
     {:igniter, "~> 0.5", only: [:dev, :test]},
     # Optional: enable dynamic node discovery via ExServiceMeshRouter
-    {:ex_service_mesh_router, github: "mithereal/ex_service_mesh_router", optional: true}
+    {:ex_service_mesh_router, ">= 0.0.0"}
   ]
 end
 ```
