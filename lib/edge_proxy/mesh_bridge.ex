@@ -14,7 +14,7 @@ defmodule EdgeProxy.MeshBridge do
 
   alias EdgeProxy.Routing.Runtime
 
-    @compile {:no_warn_undefined, Router.Registry}
+  @compile {:no_warn_undefined, Router.Registry}
 
 
   @default_sync_interval 2_000
