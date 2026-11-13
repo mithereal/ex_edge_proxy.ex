@@ -65,13 +65,14 @@ defmodule EdgeProxy.Routing.PathRouter do
 
   defp normalize_route(route, ctx) do
     %{
-      upstream: route.upstream,
+      upstream: EdgeProxy.Routing.Balancer.select(route.upstream),
       tenant: ctx.tenant,
       host: ctx.host,
       path: ctx.path,
       opts: route.opts || %{}
     }
   end
+
 
   # ------------------------------------------------------------
   # HELPERS

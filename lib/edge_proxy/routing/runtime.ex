@@ -118,6 +118,7 @@ defmodule EdgeProxy.Routing.Runtime do
   def handle_cast({:circuit, tenant, state_flag}, state) do
     :ets.insert(@table, {{:circuit, tenant}, state_flag})
     breakers = Map.put(state.circuit_breakers, tenant, state_flag)
+    EdgeProxy.Telemetry.emit_circuit_breaker(tenant, state_flag)
     {:noreply, %{state | circuit_breakers: breakers}}
   end
 
@@ -130,26 +131,62 @@ defmodule EdgeProxy.Routing.Runtime do
   end
 
   defp normalize_route(route) do
+    upstreams =
+      cond do
+        is_list(Map.get(route, :upstreams)) ->
+          Enum.map(route.upstreams, &normalize_upstream/1)
+
+        is_list(Map.get(route, "upstreams")) ->
+          Enum.map(route["upstreams"], &normalize_upstream/1)
+
+        true ->
+          raw = Map.get(route, :upstream) || Map.fetch!(route, "upstream")
+          normalize_upstream_or_list(raw)
+      end
+
     %{
-      tenant: normalize_tenant(Map.get(route, :tenant, :any)),
-      host: Map.get(route, :host, :any),
-      path: Map.get(route, :path, :any),
-      upstream: normalize_upstream(Map.fetch!(route, :upstream)),
-      opts: Map.get(route, :opts, %{})
+      tenant: normalize_tenant(Map.get(route, :tenant, Map.get(route, "tenant", :any))),
+      host: Map.get(route, :host, Map.get(route, "host", :any)),
+      path: Map.get(route, :path, Map.get(route, "path", :any)),
+      upstream: upstreams,
+      opts: Map.get(route, :opts, Map.get(route, "opts", %{}))
     }
   end
 
-  defp normalize_tenant("any"), do: :any
-  defp normalize_tenant(val), do: val
+  defp normalize_upstream_or_list(list) when is_list(list),
+    do: Enum.map(list, &normalize_upstream/1)
 
-  defp normalize_upstream({:http, host, port}), do: %{scheme: :http, host: host, port: port}
-  defp normalize_upstream({:https, host, port}), do: %{scheme: :https, host: host, port: port}
+  defp normalize_upstream_or_list(single),
+    do: normalize_upstream(single)
 
-  defp normalize_upstream(%{"type" => scheme, "host" => host, "port" => port}) do
-    %{scheme: String.to_existing_atom(scheme), host: host, port: port}
+  defp normalize_upstream({:http, host, port}),
+    do: %{scheme: :http, host: host, port: port, weight: 1}
+
+  defp normalize_upstream({:https, host, port}),
+    do: %{scheme: :https, host: host, port: port, weight: 1}
+
+  defp normalize_upstream({:http, host, port, weight}),
+    do: %{scheme: :http, host: host, port: port, weight: weight}
+
+  defp normalize_upstream({:https, host, port, weight}),
+    do: %{scheme: :https, host: host, port: port, weight: weight}
+
+  defp normalize_upstream(%{"type" => scheme, "host" => host, "port" => port} = map) do
+    %{
+      scheme: String.to_existing_atom(scheme),
+      host: host,
+      port: port,
+      weight: Map.get(map, "weight", 1)
+    }
   end
 
   defp normalize_upstream(%{} = map) do
-    Map.put_new(map, :scheme, :http)
+    map
+    |> Map.put_new(:scheme, :http)
+    |> Map.put_new(:weight, 1)
   end
+
+
+  defp normalize_tenant("any"), do: :any
+  defp normalize_tenant(val), do: val
 end

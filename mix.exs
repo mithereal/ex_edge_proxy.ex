@@ -20,22 +20,20 @@ defmodule EdgeProxy.MixProject do
     ]
   end
 
-  defp deps do
-    [
-      # Core HTTP & WebSocket proxying
-      {:plug, "~> 1.16"},
-      {:mint, "~> 1.6"},
-      {:mint_web_socket, "~> 1.0"},
-      {:websock_adapter, "~> 0.5"},
-      {:jason, "~> 1.4"},
+defp deps do
+  [
+    {:plug, "~> 1.16"},
+    {:mint, "~> 1.6"},
+    {:mint_web_socket, "~> 1.0"},
+    {:websock_adapter, "~> 0.5"},
+    {:jason, "~> 1.4"},
+    {:telemetry, "~> 1.3"},
+    {:phoenix, "~> 1.7", optional: true},
+    {:phoenix_live_view, "~> 1.0", optional: true},
+    {:igniter, "~> 0.5", only: [:dev, :test], optional: true},
+    {:ex_service_mesh_router, github: "mithereal/ex_service_mesh_router", optional: true},
+    {:bandit, "~> 1.5", only: :test}
+  ]
+end
 
-      # Optional Phoenix / LiveView & Igniter integrations
-      {:phoenix, "~> 1.7", optional: true},
-      {:phoenix_live_view, "~> 1.0", optional: true},
-      {:igniter, "~> 0.5", optional: true},
-      {:ex_service_mesh_router, github: "mithereal/ex_service_mesh_router", optional: true},
-      # Test server for end-to-end HTTP/WebSocket proxy tests
-      {:bandit, "~> 1.5", only: :test}
-    ]
-  end
 end

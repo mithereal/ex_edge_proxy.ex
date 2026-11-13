@@ -26,9 +26,7 @@ defmodule EdgeProxy.MeshBridgeTest do
     :ok
   end
 
-
   test "syncs discovered services from Router.Registry into Runtime and preserves static routes" do
-    # Define a mock Router.Registry if :ex_service_mesh_router is not in deps
     unless Code.ensure_loaded?(Router.Registry) do
       defmodule Router.Registry do
         def list_routes do
@@ -48,10 +46,7 @@ defmodule EdgeProxy.MeshBridgeTest do
 
     routes = Runtime.routes()
 
-    # Static route is still intact
     assert Enum.any?(routes, &(&1.host == "static.mesh.local"))
-
-    # Exact and wildcard mesh routes were added for both services
     assert Enum.any?(routes, &(&1.host == "auth.mesh.local" and &1.upstream.port == 4001))
     assert Enum.any?(routes, &(&1.host == "*.auth.mesh.local" and &1.upstream.port == 4001))
     assert Enum.any?(routes, &(&1.host == "billing.mesh.local" and &1.path == "/billing"))
@@ -75,7 +70,6 @@ defmodule EdgeProxy.MeshBridgeTest do
         {DynamicMockRegistry, [{"temp.mesh.local", %{ip: "127.0.0.1", port: 4055}}]}
       )
 
-    # Temporarily point Router.Registry.list_routes/0 to the Agent
     Code.compiler_options(ignore_module_conflict: true)
 
     defmodule Router.Registry do
@@ -90,7 +84,6 @@ defmodule EdgeProxy.MeshBridgeTest do
 
     assert Enum.any?(Runtime.routes(), &(&1.host == "temp.mesh.local"))
 
-    # Simulate node crash / deregistration in Router.Registry
     DynamicMockRegistry.set([])
     assert {:ok, 0} = MeshBridge.sync_now()
     :sys.get_state(Runtime)

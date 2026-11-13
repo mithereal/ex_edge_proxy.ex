@@ -9,10 +9,14 @@ defmodule EdgeProxy.Application do
   def start(_type, _args) do
     children =
       [
+        EdgeProxy.Telemetry,
         EdgeProxy.Routing.Runtime,
+        EdgeProxy.RateLimiter,
         EdgeProxy.LiveView.SessionSupervisor,
-        EdgeProxy.Control.Socket
+        EdgeProxy.Control.Socket,
+        EdgeProxy.HealthChecker
       ] ++ maybe_mesh_bridge()
+
 
     opts = [strategy: :one_for_one, name: EdgeProxy.Supervisor]
 

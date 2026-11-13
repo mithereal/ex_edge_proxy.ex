@@ -83,14 +83,29 @@ defmodule EdgeProxy.Config.Loader do
   end
 
   defp normalize_route(route) do
+    upstream =
+      case route["upstreams"] do
+        list when is_list(list) -> Enum.map(list, &parse_upstream/1)
+        _ -> parse_upstream(route["upstream"])
+      end
+
     %{
       tenant: parse_tenant(route["tenant"] || :any),
       host: parse_host(route["host"] || :any),
       path: route["path"] || "/",
-      upstream: parse_upstream(route["upstream"]),
+      upstream: upstream,
       opts: route["opts"] || %{}
     }
   end
+
+  defp parse_upstream(%{"type" => "http", "host" => host, "port" => port} = map),
+    do: {:http, host, port, Map.get(map, "weight", 1)}
+
+  defp parse_upstream(%{"type" => "https", "host" => host, "port" => port} = map),
+    do: {:https, host, port, Map.get(map, "weight", 1)}
+
+  defp parse_upstream(other), do: other
+
 
   defp parse_tenant("any"), do: :any
   defp parse_tenant(:any), do: :any
@@ -99,12 +114,4 @@ defmodule EdgeProxy.Config.Loader do
   defp parse_host("any"), do: :any
   defp parse_host(:any), do: :any
   defp parse_host(val), do: val
-
-  defp parse_upstream(%{"type" => "http", "host" => host, "port" => port}),
-    do: {:http, host, port}
-
-  defp parse_upstream(%{"type" => "https", "host" => host, "port" => port}),
-    do: {:https, host, port}
-
-  defp parse_upstream(other), do: other
 end

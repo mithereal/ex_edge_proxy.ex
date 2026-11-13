@@ -27,6 +27,22 @@ defmodule EdgeProxy.Igniter.Extension do
     end)
   end
 
+  def inject_metrics_plug(igniter, path) do
+    Igniter.update_elixir_file(igniter, path, fn zipper ->
+      if plug_present?(zipper, EdgeProxy.Metrics.Plug) do
+        zipper
+      else
+        insert_after_use(zipper, Phoenix.Endpoint, "plug EdgeProxy.Metrics.Plug")
+      end
+    end)
+  end
+
+  def remove_metrics_plug(igniter, path) do
+    Igniter.update_elixir_file(igniter, path, fn zipper ->
+      remove_plug(zipper, EdgeProxy.Metrics.Plug)
+    end)
+  end
+
   # ------------------------------------------------------------
   # PHOENIX APPS (CONTEXT ONLY)
   # ------------------------------------------------------------
