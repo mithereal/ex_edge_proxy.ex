@@ -2,7 +2,7 @@ defmodule EdgeProxy.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/mithereal/ex_service_mesh_router"
+  @source_url "https://github.com/mithereal/ex_edge_proxy"
 
   def project do
     [
