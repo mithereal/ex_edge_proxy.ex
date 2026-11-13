@@ -72,7 +72,7 @@ defmodule EdgeProxy.MixProject do
     ]
   end
 
-  defp docs do
+    defp docs do
     [
       main: "readme",
       source_ref: "v#{@version}",
@@ -89,6 +89,7 @@ defmodule EdgeProxy.MixProject do
           EdgeProxy,
           EdgeProxy.Application,
           EdgeProxy.Plug.Router,
+          EdgeProxy.Plug.InternalGuard,
           EdgeProxy.Config.Loader,
           EdgeProxy.State
         ],
@@ -122,6 +123,7 @@ defmodule EdgeProxy.MixProject do
         ],
         "Integrations & Mix Tasks": [
           EdgeProxy.MeshBridge,
+          EdgeProxy.BackplaneClient,
           EdgeProxy.Igniter.Extension,
           Mix.Tasks.EdgeProxy.Install,
           Mix.Tasks.EdgeProxy.Control
@@ -129,4 +131,5 @@ defmodule EdgeProxy.MixProject do
       ]
     ]
   end
+
 end

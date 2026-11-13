@@ -3,14 +3,22 @@ defmodule EdgeProxy.BackplaneClient do
   Internal service-to-service HTTP client that routes requests over the private
   `ex_service_mesh_router` backplane while preserving `EdgeContract` headers
   (`x-edge-tenant`, `x-edge-domain`, `x-request-id`).
+
+  Built directly on `Mint.HTTP` and `Jason` with zero external HTTP client dependencies.
   """
 
   require Logger
 
   @default_mesh_url "http://127.0.0.1:4040"
 
+  @type response :: %{
+          status: non_neg_integer(),
+          headers: [{String.t(), String.t()}],
+          body: binary()
+        }
+
   @type request_opt ::
-          {:method, atom()}
+          {:method, atom() | String.t()}
           | {:headers, [{String.t(), String.t()}]}
 
           | {:body, iodata() | nil}
@@ -18,90 +26,188 @@ defmodule EdgeProxy.BackplaneClient do
 
           | {:params, keyword() | map()}
           | {:conn, Plug.Conn.t()}
-          | {:socket, Phoenix.LiveView.Socket.t()}
+          | {:socket, map()}
           | {:tenant, String.t()}
           | {:domain, String.t()}
           | {:request_id, String.t()}
+          | {:mesh_url, String.t()}
           | {:receive_timeout, pos_integer()}
 
   @doc """
   Sends an internal backplane request to a registered mesh service (e.g., `"auth.mesh.local"`).
-
-  Automatically extracts `EdgeContract` context from `:conn` or `:socket` if provided,
-  or accepts explicit `:tenant`, `:domain`, and `:request_id` options.
-
-  ## Examples
-
-      # From a Phoenix Controller (automatically forwards Plug.Conn EdgeContract headers)
-      EdgeProxy.BackplaneClient.request("auth.mesh.local", "/api/v1/verify",
-        conn: conn,
-        headers: [{"authorization", "Bearer \#{token}"}]
-      )
-
-      # From a LiveView or background GenServer
-      EdgeProxy.BackplaneClient.request("billing.mesh.local", "/api/v1/invoices",
-        method: :post,
-        tenant: "tenant1",
-        json: %{amount: 5000}
-      )
   """
   @spec request(String.t(), String.t(), [request_opt()]) ::
-          {:ok, Req.Response.t()} | {:error, term()}
+          {:ok, response()} | {:error, term()}
   def request(target_service, path, opts \\ []) when is_binary(target_service) and is_binary(path) do
-    mesh_url = Application.get_env(:ex_edge_proxy, :mesh_backplane_url, @default_mesh_url)
-    url = String.trim_trailing(mesh_url, "/") <> "/" <> String.trim_leading(path, "/")
+    mesh_url =
+      Keyword.get(
+        opts,
+        :mesh_url,
+        Application.get_env(:edge_proxy, :mesh_backplane_url, @default_mesh_url)
+      )
 
-    method = Keyword.get(opts, :method, :get)
-    user_headers = Keyword.get(opts, :headers, [])
-    contract_headers = extract_contract_headers(opts)
+    uri = URI.parse(mesh_url)
+    scheme = parse_scheme(uri.scheme)
+    host = uri.host || "127.0.0.1"
+    port = uri.port || default_port(scheme)
+
+    method = opts |> Keyword.get(:method, :get) |> normalize_method()
+    request_path = build_path(uri.path, path, Keyword.get(opts, :params))
+    timeout = Keyword.get(opts, :receive_timeout, 15_000)
+
+    {body, extra_headers} = encode_body(opts)
 
     headers =
       [{"x-backplane-service", target_service}]
-      |> merge_headers(contract_headers)
-      |> merge_headers(user_headers)
+      |> merge_headers(extra_headers)
+      |> merge_headers(extract_contract_headers(opts))
+      |> merge_headers(Keyword.get(opts, :headers, []))
 
-    req_opts =
-      [
-        method: method,
-        url: url,
-        headers: headers,
-        receive_timeout: Keyword.get(opts, :receive_timeout, 15_000)
-      ]
-      |> maybe_put(:body, Keyword.get(opts, :body))
-      |> maybe_put(:json, Keyword.get(opts, :json))
-      |> maybe_put(:params, Keyword.get(opts, :params))
+    with {:ok, conn} <- Mint.HTTP.connect(scheme, host, port, protocols: [:http1]),
+         {:ok, conn, ref} <- Mint.HTTP.request(conn, method, request_path, headers, body),
+         {:ok, conn, response} <- receive_response(conn, ref, timeout) do
+      Mint.HTTP.close(conn)
+      classify_response(target_service, response)
+    else
+      {:error, conn, reason, _responses} ->
+        Mint.HTTP.close(conn)
+        log_transport_error(target_service, reason)
+        {:error, {:transport_error, reason}}
 
-    case Req.request(req_opts) do
-      {:ok, %Req.Response{status: status} = resp} when status in 200..299 ->
-        {:ok, resp}
-
-      {:ok, %Req.Response{status: 502} = resp} ->
-        Logger.warning(
-          "[EdgeProxy.BackplaneClient] Target service '#{target_service}' unreachable or unregistered on mesh"
-        )
-
-        {:error, {:service_unavailable, resp}}
-
-      {:ok, %Req.Response{} = resp} ->
-        {:error, {:http_error, resp.status, resp}}
-
-      {:error, exception} ->
-        Logger.error(
-          "[EdgeProxy.BackplaneClient] Mesh transport failure calling '#{target_service}': #{inspect(exception)}"
-        )
-
-        {:error, {:transport_error, exception}}
+      {:error, reason} ->
+        log_transport_error(target_service, reason)
+        {:error, {:transport_error, reason}}
     end
   end
 
-  # Extracts EdgeContract context from a Plug.Conn, LiveView.Socket, or explicit opts
+  defp classify_response(target_service, %{status: status} = resp) when status in 200..299 do
+    _ = target_service
+    {:ok, resp}
+  end
+
+  defp classify_response(target_service, %{status: 502} = resp) do
+    Logger.warning(
+      "[EdgeProxy.BackplaneClient] Target service '#{target_service}' unreachable or unregistered on mesh"
+    )
+
+    {:error, {:service_unavailable, resp}}
+  end
+
+  defp classify_response(_target_service, %{status: status} = resp) do
+    {:error, {:http_error, status, resp}}
+  end
+
+  defp log_transport_error(target_service, reason) do
+    Logger.error(
+      "[EdgeProxy.BackplaneClient] Mesh transport failure calling '#{target_service}': #{inspect(reason)}"
+    )
+  end
+
+  # Mint HTTP Response Loop
+
+  defp receive_response(conn, ref, timeout) do
+    receive_loop(conn, ref, timeout, %{status: nil, headers: [], body: []})
+  end
+
+  defp receive_loop(conn, ref, timeout, acc) do
+    receive do
+      message ->
+        case Mint.HTTP.stream(conn, message) do
+          :unknown ->
+            receive_loop(conn, ref, timeout, acc)
+
+          {:ok, conn, responses} ->
+            case handle_responses(responses, ref, acc) do
+              {:done, final_resp} -> {:ok, conn, final_resp}
+              {:continue, new_acc} -> receive_loop(conn, ref, timeout, new_acc)
+            end
+
+          {:error, conn, reason, responses} ->
+            {:error, conn, reason, responses}
+        end
+    after
+      timeout ->
+        {:error, conn, :timeout, []}
+    end
+  end
+
+  defp handle_responses([], _ref, acc), do: {:continue, acc}
+
+  defp handle_responses([{:status, ref, status} | rest], ref, acc) do
+    handle_responses(rest, ref, %{acc | status: status})
+  end
+
+  defp handle_responses([{:headers, ref, headers} | rest], ref, acc) do
+    handle_responses(rest, ref, %{acc | headers: acc.headers ++ headers})
+  end
+
+  defp handle_responses([{:data, ref, chunk} | rest], ref, acc) do
+    handle_responses(rest, ref, %{acc | body: [chunk | acc.body]})
+  end
+
+  defp handle_responses([{:done, ref} | _rest], ref, acc) do
+    final_body = acc.body |> Enum.reverse() |> IO.iodata_to_binary()
+    {:done, %{acc | body: final_body}}
+  end
+
+  defp handle_responses([_other | rest], ref, acc) do
+    handle_responses(rest, ref, acc)
+  end
+
+  # Helpers
+
+  defp parse_scheme("https"), do: :https
+  defp parse_scheme(_), do: :http
+
+  defp default_port(:https), do: 443
+  defp default_port(:http), do: 80
+
+  defp normalize_method(method) when is_atom(method),
+    do: method |> Atom.to_string() |> String.upcase()
+
+  defp normalize_method(method) when is_binary(method), do: String.upcase(method)
+
+  defp build_path(base_path, path, params) do
+    prefix = if is_binary(base_path), do: String.trim_trailing(base_path, "/"), else: ""
+    clean_path = "/" <> String.trim_leading(path, "/")
+    full_path = prefix <> clean_path
+
+    case params do
+      nil ->
+        full_path
+
+      empty when empty == [] or empty == %{} ->
+        full_path
+
+      query_params ->
+        query = URI.encode_query(query_params)
+        separator = if String.contains?(full_path, "?"), do: "&", else: "?"
+        full_path <> separator <> query
+    end
+  end
+
+  defp encode_body(opts) do
+    cond do
+      Keyword.has_key?(opts, :json) ->
+        {Jason.encode!(Keyword.fetch!(opts, :json)), [{"content-type", "application/json"}]}
+
+      Keyword.get(opts, :body) != nil ->
+        {Keyword.get(opts, :body), []}
+
+      true ->
+        {nil, []}
+    end
+  end
+
   defp extract_contract_headers(opts) do
     {conn_tenant, conn_domain, conn_req_id} =
       case Keyword.get(opts, :conn) do
         %Plug.Conn{} = conn ->
           {
-            get_req_header(conn, "x-edge-tenant") || get_in(conn.assigns, [:edge_contract, :tenant]),
-            get_req_header(conn, "x-edge-domain") || get_in(conn.assigns, [:edge_contract, :domain]),
+            get_req_header(conn, "x-edge-tenant") ||
+              get_in(conn.assigns, [:edge_contract, :tenant]),
+            get_req_header(conn, "x-edge-domain") ||
+              get_in(conn.assigns, [:edge_contract, :domain]),
             get_req_header(conn, "x-request-id") || Logger.metadata()[:request_id]
           }
 
@@ -148,7 +254,4 @@ defmodule EdgeProxy.BackplaneClient do
 
     filtered_base ++ overrides
   end
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, val), do: Keyword.put(opts, key, val)
 end

@@ -19,7 +19,7 @@ defmodule EdgeProxy.Plug.InternalGuard do
       Keyword.get(
         opts,
         :internal_patterns,
-        Application.get_env(:ex_edge_proxy, :internal_host_patterns, @default_internal_patterns)
+        Application.get_env(:edge_proxy, :internal_host_patterns, @default_internal_patterns)
       )
 
     %{patterns: patterns}
@@ -44,7 +44,7 @@ defmodule EdgeProxy.Plug.InternalGuard do
   defp internal_host?(host, patterns) do
     Enum.any?(patterns, fn
       %Regex{} = regex -> Regex.match?(regex, host)
-      suffix when is_binary(suffix) -> String.ends_with?(host, suffix)
+      suffix when is_binary(suffix) -> String.ends_with?(host, String.downcase(suffix))
     end)
   end
 
