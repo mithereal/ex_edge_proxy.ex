@@ -33,7 +33,7 @@ defmodule EdgeProxy.MixProject do
       {:phoenix, "~> 1.7", optional: true},
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:igniter, "~> 0.5", optional: true},
-
+      {:ex_service_mesh_router, github: "mithereal/ex_service_mesh_router", optional: true},
       # Test server for end-to-end HTTP/WebSocket proxy tests
       {:bandit, "~> 1.5", only: :test}
     ]

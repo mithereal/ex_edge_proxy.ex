@@ -1,22 +1,27 @@
 defmodule EdgeContract.LiveView do
   @moduledoc """
   LiveView `on_mount` hook restoring `EdgeContract` from session or connect_info
-  into `socket.assigns.edge`.
+  into `socket.assigns.edge` and enforcing tenant isolation.
   """
+
+  @compile {:no_warn_undefined, [Phoenix.LiveView, Phoenix.Component]}
 
   import Phoenix.LiveView
   import Phoenix.Component, only: [assign: 3]
 
+  alias EdgeContract.TenantEnforcer
   alias EdgeProxy.EdgeContract
 
   def on_mount(:default, _params, session, socket) do
     contract = resolve_contract(session, socket)
+    TenantEnforcer.apply(contract)
     {:cont, assign(socket, :edge, contract)}
   end
 
   def on_mount(:require_tenant, _params, session, socket) do
     case resolve_contract(session, socket) do
       %EdgeContract{tenant: tenant} = contract when is_binary(tenant) and tenant != "" ->
+        TenantEnforcer.apply(contract)
         {:cont, assign(socket, :edge, contract)}
 
       _ ->

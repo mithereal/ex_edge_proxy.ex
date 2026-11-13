@@ -1,12 +1,14 @@
 defmodule EdgeContract.Plug do
   @moduledoc """
-  Extracts EdgeContract headers injected by EdgeProxy into `conn.assigns.edge`
-  and stores them in the session for LiveView consumption.
+  Extracts EdgeContract headers injected by EdgeProxy into `conn.assigns.edge`,
+  stores them in the session for LiveView consumption, and applies optional
+  Ecto/Ash tenant isolation.
   """
 
   @behaviour Plug
   import Plug.Conn
 
+  alias EdgeContract.TenantEnforcer
   alias EdgeProxy.EdgeContract
 
   @impl true
@@ -20,6 +22,8 @@ defmodule EdgeContract.Plug do
       request_id: first_header(conn, "x-request-id"),
       auth_context: decode_auth_context(first_header(conn, "x-edge-auth"))
     }
+
+    TenantEnforcer.apply(contract)
 
     conn
     |> assign(:edge, contract)
