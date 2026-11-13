@@ -152,3 +152,74 @@ mix run scripts/load_test.exs --duration 60 --concurrency 16
 # Run load test without tripping circuit breakers
 mix run scripts/load_test.exs --duration 30 --concurrency 10 --no-chaos
 ```
+
+## Hybrid Routing: Internal App-to-App Backplane (`ex_service_mesh_router`)
+
+When running `ex_edge_proxy` alongside `ex_service_mesh_router`, you can isolate public ingress traffic from internal service-to-service communication by splitting traffic across two Bandit listeners:
+
+1. **Public Ingress (`EdgeProxy.Plug.Router` on Port `4000`):** Handles external traffic, rate limiting, circuit breakers, and `EdgeContract` header injection.
+2. **Internal Backplane (`Router.Router` on Port `4040`):** Bound strictly to `127.0.0.1` or a private VPC interface so internal services can communicate via `x-backplane-service` without exposing internal endpoints to the public internet.
+
+### 1. Gateway Supervision Tree Setup
+
+Start `Router.Registry` first so both `EdgeProxy.MeshBridge` (public route sync) and `Router.Router` (internal backplane) share the same live cluster registry:
+
+```elixir
+# lib/gateway/application.ex
+children = [
+  # 1. Shared dynamic service discovery registry
+  {Router.Registry, name: Router.Registry},
+
+  # 2. Public-facing EdgeProxy (Port 4000)
+  {Bandit, plug: EdgeProxy.Plug.Router, port: 4000},
+
+  # 3. Private internal service mesh backplane (Port 4040, loopback/VPC only)
+  {Bandit, plug: Router.Router, port: 4040, ip: {127, 0, 0, 1}}
+]
+```
+
+Configure the internal backplane URL in `config/runtime.exs`:
+
+```elixir
+config :ex_edge_proxy,
+  mesh_backplane_url: System.get_env("MESH_BACKPLANE_URL") || "http://127.0.0.1:4040"
+```
+
+### 2. Preventing Internal-Only Services from Leaking to Public Ingress
+
+Because `EdgeProxy.MeshBridge` automatically syncs registrations from `Router.Registry`, internal-only microservices (such as `payment-worker.mesh.local`) will be synced into EdgeProxy unless excluded.
+
+To keep internal services private:
+* **Option A (EdgeProxy Host Rules):** Configure explicit allowed public domains in `routes.json` or block internal suffixes (`*.internal.mesh.local`) at the edge.
+* **Option B (Gateway Firewall):** Restrict port `4040` at the container/VPC security group level so external clients cannot reach `Router.Router` directly.
+
+### 3. Propagating `EdgeContract` Across Internal Calls
+
+Internal requests sent directly to `Router.Router` (port `4040`) bypass `EdgeProxy.Plug.Router` and therefore do not receive automatic `x-edge-tenant` or `x-request-id` injection. If the target service uses `EdgeContract.Plug` or `EdgeContract.TenantEnforcer` (Ecto/Ash isolation), use `EdgeProxy.BackplaneClient` to forward the active tenant context automatically:
+
+```elixir
+# Inside a Phoenix Controller (forwards tenant, domain, and request_id from conn)
+{:ok, response} =
+  EdgeProxy.BackplaneClient.request("auth.mesh.local", "/api/v1/verify",
+    conn: conn,
+    headers: [{"authorization", "Bearer #{token}"}]
+  )
+
+# Inside a LiveView or background worker
+{:ok, response} =
+  EdgeProxy.BackplaneClient.request("billing.mesh.local", "/api/v1/charges",
+    method: :post,
+    tenant: socket.assigns.tenant,
+    json: %{amount: 2500}
+  )
+```
+
+### Exception Handling Behavior
+
+| Scenario | Behavior |
+| :--- | :--- |
+| **Target service unregistered or crashed** | `Router.Router` returns `502`, which `BackplaneClient` logs as a warning and normalizes to `{:error, {:service_unavailable, resp}}`. |
+| **Missing tenant context on downstream Ecto/Ash call** | Passing `:conn` or `:socket` forwards `x-edge-tenant`. If omitted on a background job, pass `tenant: "..."` explicitly so `EdgeContract.Plug` does not reject the request. |
+| **Header spoofing from external clients** | External requests enter via port `4000`, where `EdgeProxy.Plug.Router` overwrites `x-edge-*` headers before forwarding. Port `4040` must never be exposed publicly. |
+
+

@@ -4,7 +4,8 @@ defmodule EdgeProxy.MeshBridge do
 
   Responsibilities:
   - Reads live upstream registrations from `Router.Registry` (when available)
-  - Converts discovered mesh endpoints into `EdgeProxy` routes (`source: :mesh`)
+  - Excludes internal-only mesh services (e.g. `*.internal.mesh.local`) from public ingress
+  - Converts discovered public mesh endpoints into `EdgeProxy` routes (`source: :mesh`)
   - Preserves static (`routes.json`) and control-plane (`/__edge_control__`) routes
   - Automatically prunes routes when `Router.Registry` removes crashed/disconnected nodes
   """
@@ -16,8 +17,11 @@ defmodule EdgeProxy.MeshBridge do
 
   @compile {:no_warn_undefined, Router.Registry}
 
-
   @default_sync_interval 2_000
+  @default_internal_patterns [
+    ~r/\.internal\.mesh\.local$/i,
+    ~r/\.internal\.zone$/i
+  ]
 
   # ------------------------------------------------------------
   # PUBLIC API
@@ -55,9 +59,9 @@ defmodule EdgeProxy.MeshBridge do
 
     if mesh_available?() do
       ensure_mesh_registry_started()
-      perform_sync()
+      {_count, hash} = perform_sync(nil, true)
       schedule_sync(interval)
-      {:ok, %{interval: interval, last_hash: nil}}
+      {:ok, %{interval: interval, last_hash: hash}}
     else
       Logger.info("[EdgeProxy.MeshBridge] :ex_service_mesh_router not loaded; bridge idle.")
       {:ok, %{interval: interval, last_hash: :disabled}}
@@ -65,9 +69,13 @@ defmodule EdgeProxy.MeshBridge do
   end
 
   @impl true
+  def handle_call(:sync_now, _from, %{last_hash: :disabled} = state) do
+    {:reply, {:error, :mesh_disabled}, state}
+  end
+
   def handle_call(:sync_now, _from, state) do
-    count = perform_sync()
-    {:reply, {:ok, count}, state}
+    {count, new_hash} = perform_sync(state.last_hash, true)
+    {:reply, {:ok, count}, %{state | last_hash: new_hash}}
   end
 
   @impl true
@@ -76,9 +84,9 @@ defmodule EdgeProxy.MeshBridge do
   end
 
   def handle_info(:sync, state) do
-    perform_sync()
+    {_count, new_hash} = perform_sync(state.last_hash, false)
     schedule_sync(state.interval)
-    {:noreply, state}
+    {:noreply, %{state | last_hash: new_hash}}
   end
 
   # ------------------------------------------------------------
@@ -95,13 +103,26 @@ defmodule EdgeProxy.MeshBridge do
     end
   end
 
-  defp perform_sync do
+  defp perform_sync(last_hash, force?) do
+    internal_patterns =
+      Application.get_env(
+        :ex_edge_proxy,
+        :internal_host_patterns,
+        @default_internal_patterns
+      )
+
     mesh_routes =
       fetch_mesh_entries()
+      |> Enum.reject(&internal_entry?(&1, internal_patterns))
       |> Enum.flat_map(&entry_to_edge_routes/1)
 
-    merge_into_runtime(mesh_routes)
-    length(mesh_routes)
+    new_hash = :erlang.phash2(mesh_routes)
+
+    if force? or new_hash != last_hash do
+      merge_into_runtime(mesh_routes)
+    end
+
+    {length(mesh_routes), new_hash}
   end
 
   # Supports common Router.Registry inspection APIs or ETS state
@@ -132,6 +153,26 @@ defmodule EdgeProxy.MeshBridge do
       list when is_list(list) -> list
       _ -> []
     end
+  end
+
+  # Filters out services marked internal: true or matching :internal_host_patterns
+  defp internal_entry?({host, meta}, patterns) when is_map(meta) do
+    Map.get(meta, :internal, false) == true or internal_host?(host, patterns)
+  end
+
+  defp internal_entry?({host, _target}, patterns) do
+    internal_host?(host, patterns)
+  end
+
+  defp internal_entry?(_other, _patterns), do: false
+
+  defp internal_host?(host, patterns) do
+    normalized = host |> to_string() |> String.downcase()
+
+    Enum.any?(patterns, fn
+      %Regex{} = regex -> Regex.match?(regex, normalized)
+      suffix when is_binary(suffix) -> String.ends_with?(normalized, String.downcase(suffix))
+    end)
   end
 
   # Translates {host_key, target_info} from Router.Registry into EdgeProxy route maps
