@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+rule_files:
+  - "edge_proxy_alerts.yml"
+
+scrape_configs:
+  - job_name: "edge_proxy"
+    metrics_path: "/metrics"
+    scrape_interval: 5s
+    scrape_timeout: 4s
+    static_configs:
+      - targets:
+          - "edge_proxy:4000"
+        labels:
+          service: "edge_proxy"
+          env: "production"

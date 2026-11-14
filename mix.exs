@@ -1,61 +1,135 @@
 defmodule EdgeProxy.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/mithereal/ex_edge_proxy"
+
   def project do
     [
       app: :edge_proxy,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
-      compilers: [:phoenix] ++ Mix.compilers(),
       deps: deps(),
-      elixirc_paths: elixirc_paths(Mix.env())
+      description: description(),
+      package: package(),
+      docs: docs(),
+      name: "EdgeProxy",
+      source_url: @source_url
     ]
   end
 
   def application do
     [
-      mod: {EdgeProxy.Application, []},
-      extra_applications: [
-        :logger,
-        :crypto,
-        :telemetry
+      extra_applications: [:logger, :crypto, :inets, :ssl],
+      mod: {EdgeProxy.Application, []}
+    ]
+  end
+
+  defp deps do
+    [
+      # Core HTTP & WebSocket proxying
+      {:plug, "~> 1.16"},
+      {:mint, "~> 1.6"},
+      {:mint_web_socket, "~> 1.0"},
+      {:websock_adapter, "~> 0.5"},
+      {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.3"},
+
+      # Optional Phoenix / LiveView, Igniter & Service Mesh integrations
+      {:phoenix, "~> 1.7", optional: true},
+      {:phoenix_live_view, "~> 1.0", optional: true},
+      {:igniter, "~> 0.5", only: [:dev, :test], optional: true},
+      {:ex_service_mesh_router, "~> 0.1", optional: true},
+
+      # Documentation & Testing
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:bandit, "~> 1.5", only: :test}
+    ]
+  end
+
+  defp description do
+    "A BEAM-native, tenant-aware reverse proxy, weighted load balancer, and edge gateway for Phoenix umbrella applications."
+  end
+
+  defp package do
+    [
+      name: "edge_proxy",
+      licenses: ["MIT"],
+      maintainers: ["Jason Clark"],
+      links: %{
+        "GitHub" => @source_url
+      },
+      files: ~w(
+        lib
+        mix.exs
+        README.md
+        SETUP.md
+        USAGE.md
+        CHANGELOG.md
+        LICENSE
+      )
+    ]
+  end
+
+    defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      source_url: @source_url,
+      extras: [
+        "README.md",
+        "SETUP.md",
+        "USAGE.md",
+        "CHANGELOG.md",
+        "LICENSE"
+      ],
+      groups_for_modules: [
+        "Core Gateway": [
+          EdgeProxy,
+          EdgeProxy.Application,
+          EdgeProxy.Plug.Router,
+          EdgeProxy.Plug.InternalGuard,
+          EdgeProxy.Config.Loader,
+          EdgeProxy.State
+        ],
+        "Routing & Load Balancing": [
+          EdgeProxy.Routing.Runtime,
+          EdgeProxy.Routing.PathRouter,
+          EdgeProxy.Routing.Balancer
+        ],
+        "HTTP & WebSocket Proxy": [
+          EdgeProxy.HTTP.Forwarder,
+          EdgeProxy.LiveView.Session,
+          EdgeProxy.LiveView.SessionSupervisor
+        ],
+        "Resilience & Telemetry": [
+          EdgeProxy.RateLimiter,
+          EdgeProxy.HealthChecker,
+          EdgeProxy.Telemetry,
+          EdgeProxy.Metrics.Plug
+        ],
+        "Control Plane": [
+          EdgeProxy.Control.Plug,
+          EdgeProxy.Control.Socket,
+          EdgeProxy.Control.Security,
+          EdgeProxy.Control.Client
+        ],
+        "Downstream App Contract": [
+          EdgeProxy.EdgeContract,
+          EdgeContract.Plug,
+          EdgeContract.LiveView,
+          EdgeContract.TenantEnforcer
+        ],
+        "Integrations & Mix Tasks": [
+          EdgeProxy.MeshBridge,
+          EdgeProxy.BackplaneClient,
+          EdgeProxy.Igniter.Extension,
+          Mix.Tasks.EdgeProxy.Install,
+          Mix.Tasks.EdgeProxy.Control
+        ]
       ]
     ]
   end
 
-  # ------------------------------------------------------------
-  # Compilation paths
-  # ------------------------------------------------------------
-
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
-  defp elixirc_paths(_), do: ["lib"]
-
-  # ------------------------------------------------------------
-  # Dependencies
-  # ------------------------------------------------------------
-
-  defp deps do
-    [
-      # HTTP proxy transport
-      {:mint, "~> 1.6"},
-
-      # WebSocket support for LiveView proxying
-      {:castore, "~> 1.0"},
-
-      # Plug integration (used in Phoenix endpoints)
-      {:plug, "~> 1.15"},
-
-      # Optional telemetry hooks
-      {:telemetry, "~> 1.2"},
-
-      # Optional JSON handling for control plane
-      {:jason, "~> 1.4"},
-
-      {:igniter, "~> 0.7"},
-
-      # Only needed if you later expand to Phoenix Channels control plane
-      # {:phoenix, "~> 1.7", only: [:dev, :test]}
-    ]
-  end
 end

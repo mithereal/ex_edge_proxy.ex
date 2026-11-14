@@ -1,21 +1,37 @@
 defmodule EdgeProxy.Control.Plug do
+  @moduledoc """
+  HTTP JSON control plane endpoint mounted at `/__edge_control__`.
+  """
+
+  @behaviour Plug
   import Plug.Conn
 
+  @impl true
   def init(opts), do: opts
 
-  def call(conn, _opts) do
-    case conn.path_info do
-      ["__edge_control__"] ->
-        {:ok, conn}
-        |> upgrade_to_ws()
-
-      _ ->
+  @impl true
+  def call(%{path_info: ["__edge_control__"], method: "POST"} = conn, _opts) do
+    with {:ok, body, conn} <- read_body(conn),
+         {:ok, msg} <- Jason.decode(body),
+         :ok <- EdgeProxy.Control.Socket.handle_command(msg) do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(%{status: "ok"}))
+      |> halt()
+    else
+      {:error, reason} ->
         conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(401, Jason.encode!(%{status: "error", reason: inspect(reason)}))
+        |> halt()
     end
   end
 
-  defp upgrade_to_ws(conn) do
-    # delegated to Phoenix/WebSocket adapter in real deployment
-    send_resp(conn, 200, "control endpoint placeholder")
+  def call(%{path_info: ["__edge_control__"]} = conn, _opts) do
+    conn
+    |> send_resp(405, "Method Not Allowed")
+    |> halt()
   end
+
+  def call(conn, _opts), do: conn
 end

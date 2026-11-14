@@ -1,0 +1,35 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname", "tenant"]
+  group_wait: 10s
+  group_interval: 2m
+  repeat_interval: 1h
+  receiver: "default-webhook"
+  routes:
+    - matchers:
+        - severity = "critical"
+      group_wait: 0s
+      repeat_interval: 15m
+      receiver: "critical-alerts"
+
+receivers:
+  - name: "default-webhook"
+    webhook_configs:
+      # Replace with your Slack incoming webhook, Discord webhook (/slack suffix), or internal endpoint
+      - url: "${ALERT_WEBHOOK_URL:-http://docker.internal}"
+        send_resolved: true
+
+  - name: "critical-alerts"
+    webhook_configs:
+      - url: "${CRITICAL_WEBHOOK_URL:-http://docker.internal}"
+        send_resolved: true
+
+inhibit_rules:
+  # Suppress tenant circuit-breaker warnings when the underlying upstream is already firing EdgeProxyUpstreamDown
+  - source_matchers:
+      - alertname = "EdgeProxyUpstreamDown"
+    target_matchers:
+      - alertname = "EdgeProxyCircuitBreakerOpen"
+    equal: ["instance"]

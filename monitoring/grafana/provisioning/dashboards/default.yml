@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: "EdgeProxy"
+    orgId: 1
+    folder: "EdgeProxy"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 15
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

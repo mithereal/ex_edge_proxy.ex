@@ -1,0 +1,11 @@
+[
+  {
+    "tenant": "any",
+    "host": "billing.mesh.local",
+    "path": "/",
+    "upstreams": [
+      { "type": "http", "host": "127.0.0.1", "port": 4001, "weight": 80 },
+      { "type": "http", "host": "127.0.0.1", "port": 4002, "weight": 20 }
+    ]
+  }
+]

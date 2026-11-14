@@ -1,0 +1,41 @@
+groups:
+  - name: edge_proxy_alerts
+    rules:
+      - alert: EdgeProxyUpstreamDown
+        expr: edge_proxy_upstream_healthy == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "EdgeProxy upstream {{ $labels.upstream }} is unhealthy"
+          description: "Health checks for upstream {{ $labels.upstream }} have failed consecutively."
+
+      - alert: EdgeProxyCircuitBreakerOpen
+        expr: edge_proxy_circuit_breaker_state == 1
+        for: 15s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open for tenant {{ $labels.tenant }}"
+          description: "Traffic for tenant {{ $labels.tenant }} is currently returning 503 Service Unavailable."
+
+      - alert: EdgeProxyHighRateLimitRejections
+        expr: rate(edge_proxy_rate_limited_total[1m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 429 rate-limit rejections for tenant {{ $labels.tenant }}"
+          description: "Tenant {{ $labels.tenant }} is exceeding its request quota (>5 rejections/sec)."
+
+      - alert: EdgeProxyHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(edge_proxy_request_duration_seconds_bucket[5m])) by (le, tenant)
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 proxy latency (>500ms) for tenant {{ $labels.tenant }}"
